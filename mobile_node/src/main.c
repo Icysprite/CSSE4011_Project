@@ -1,7 +1,9 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+
 #include "nus_peripheral.h"
 #include "watchdog.h"
+#include "ble.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 

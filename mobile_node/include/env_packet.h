@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define ENV_NODE_NAME_LEN 8
+#define ENV_NODE_NAME_LEN 9
 
 struct env_record {
     char     node_id[ENV_NODE_NAME_LEN];  
