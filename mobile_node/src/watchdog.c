@@ -11,7 +11,7 @@
 
 LOG_MODULE_REGISTER(watchdog, LOG_LEVEL_INF);
 
-#define WDT_TIMEOUT_MS 30000  /* reset if not fed within 5 seconds */
+#define WDT_TIMEOUT_MS 30000 
 
 static const struct device *wdt;
 static int wdt_channel_id;
