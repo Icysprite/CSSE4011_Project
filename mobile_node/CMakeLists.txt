@@ -6,4 +6,4 @@ project(project_mobile_node)
 
 target_include_directories(app PRIVATE include)
 
-target_sources(app PRIVATE src/main.c src/nus_peripheral.c src/ble.c)
+target_sources(app PRIVATE src/main.c src/nus_peripheral.c src/ble.c src/watchdog.c)
