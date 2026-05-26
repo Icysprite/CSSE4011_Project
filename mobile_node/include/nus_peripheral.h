@@ -9,10 +9,6 @@ extern struct bt_conn *current_conn;
 extern bool nus_notify_enabled;
 extern struct k_work_delayable adv_restart_work;
 
-/*
- * Initialise BLE and start advertising as mobile_node.
- * Call once from main.
- */
 int nus_peripheral_init(void);
 
 #endif /* NUS_PERIPHERAL_H */
