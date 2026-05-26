@@ -54,6 +54,8 @@ extern bool nus_notify_enabled;
 #define PROC_THREAD_STACK         2048
 #define PROC_THREAD_PRIORITY      5
 
+// Indicates the end of a sniffing window in the mobile node
+#define EOW_NODE_ID "EOW"
 /* ==========================================================================
  * Raw advertisement record — pushed into msgq by BLE callback
  * ========================================================================== */
@@ -208,7 +210,7 @@ static bool parse_sniffer_ad(struct bt_data *data, void *user_data)
  * BLE Callback — push into msgq and return immediately
  * ========================================================================== */
 
-static void sniffer_device_found(const bt_addr_le_t *addr, int8_t rssi,
+void sniffer_device_found(const bt_addr_le_t *addr, int8_t rssi,
                                   uint8_t type, struct net_buf_simple *ad)
 {
     struct raw_adv_record raw = {0};
@@ -261,6 +263,11 @@ static void do_broadcast_command(uint8_t cmd)
 
     printk("Command 0x%02X broadcast into mesh (%d times)\n",
            cmd, CMD_BROADCAST_COUNT);
+    
+    printk("Restarting mobile_node advertisement...\n");
+
+    /* Restart mobile_node connectable advertisement */
+    k_work_reschedule(&adv_restart_work, K_MSEC(100));
 }
 
 void ble_broadcast_command(uint8_t cmd)
@@ -306,6 +313,20 @@ static void nus_send_thread(void *p1, void *p2, void *p3)
             }
         }
 
+        /* Send EOW marker */
+        if (current_conn != NULL && nus_notify_enabled) {
+            struct env_record eow = {0};
+            memcpy(eow.node_id, EOW_NODE_ID, strlen(EOW_NODE_ID));
+            int ret = bt_nus_send(current_conn,
+                                  (uint8_t *)&eow,
+                                  sizeof(struct env_record));
+            if (ret) {
+                printk("EOW send failed (err %d)\n", ret);
+            } else {
+                printk("EOW sent\n");
+            }
+        }
+
         memset(node_records, 0, sizeof(node_records));
         node_count = 0;
 
@@ -341,8 +362,6 @@ static void proc_thread(void *p1, void *p2, void *p3)
             }
 
             if (!seq_is_valid(seq_entry, raw.seq)) {
-                LOG_INF("Dropping stale packet from %s (seq %u, last %u)",
-                        raw.node_id, raw.seq, seq_entry->last_seq);
                 continue;
             }
 

@@ -28,14 +28,8 @@ LOG_MODULE_REGISTER(nus_peripheral, LOG_LEVEL_INF);
 struct bt_conn *current_conn;
 bool nus_notify_enabled = false;
 
-static struct k_work_delayable adv_restart_work;
-
-static void nus_notif_changed(bool enabled, void *ctx)
-{
-    ARG_UNUSED(ctx);
-    nus_notify_enabled = enabled;
-    printk("NUS notify %s\n", enabled ? "enabled" : "disabled");
-}
+/* Non-static so ble.c can reschedule after command broadcast */
+struct k_work_delayable adv_restart_work;
 
 /* ==========================================================================
  * Advertising Data
@@ -62,13 +56,44 @@ static void adv_restart_fn(struct k_work *work)
 {
     ARG_UNUSED(work);
 
+    if (current_conn != NULL) {
+        printk("Already connected, skipping adv restart\n");
+        return;
+    }
+
+    printk("adv_restart_fn called\n");
+
     int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, ARRAY_SIZE(ad),
                               sd, ARRAY_SIZE(sd));
-    if (err) {
-        LOG_ERR("Advertising restart failed (err %d)", err);
+    if (err == -EALREADY) {
+        printk("Already advertising\n");
+    } else if (err) {
+        LOG_ERR("Advertising restart failed (err %d), retrying...", err);
+        k_work_reschedule((struct k_work_delayable *)work, K_MSEC(500));
+        return;
     } else {
         printk("Advertising as mobile_node...\n");
     }
+
+    /* Restart sniffer scan after advertising is up */
+    err = bt_le_scan_start(&(struct bt_le_scan_param){
+        .type     = BT_LE_SCAN_TYPE_ACTIVE,
+        .options  = BT_LE_SCAN_OPT_NONE,
+        .interval = BT_GAP_SCAN_FAST_INTERVAL,
+        .window   = BT_GAP_SCAN_FAST_WINDOW,
+    }, sniffer_device_found);
+    if (err && err != -EALREADY) {
+        LOG_ERR("Scan restart failed (err %d)", err);
+    } else {
+        printk("Sniffer scan restarted\n");
+    }
+}
+
+static void nus_notif_changed(bool enabled, void *ctx)
+{
+    ARG_UNUSED(ctx);
+    nus_notify_enabled = enabled;
+    printk("NUS notify %s\n", enabled ? "enabled" : "disabled");
 }
 
 /* ==========================================================================
@@ -122,7 +147,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
         return;
     }
 
-    current_conn = bt_conn_ref(conn);
+    current_conn = conn;
     printk("Connected to base_node (%s)\n", addr);
 }
 
@@ -135,11 +160,13 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     printk("Disconnected from base_node (%s) reason 0x%02x\n", addr, reason);
 
     if (current_conn == conn) {
-        bt_conn_unref(current_conn);
         current_conn = NULL;
     }
 
-    k_work_reschedule(&adv_restart_work, K_MSEC(200));
+    /* Stop scan to free BLE controller resources before advertising */
+    bt_le_scan_stop();
+
+    k_work_reschedule(&adv_restart_work, K_MSEC(1000));
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
