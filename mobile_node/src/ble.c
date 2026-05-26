@@ -23,17 +23,6 @@
 
 LOG_MODULE_REGISTER(ble, LOG_LEVEL_INF);
 
-/* ==========================================================================
- * External references from nus_peripheral.c
- * ========================================================================== */
-
-extern struct bt_conn *current_conn;
-extern bool nus_notify_enabled;
-
-/* ==========================================================================
- * Defines
- * ========================================================================== */
-
 #define COMPANY_ID_DATA           0xFFFF
 #define COMPANY_ID_CMD            0x0001
 #define MFG_DATA_LEN              12
@@ -54,11 +43,13 @@ extern bool nus_notify_enabled;
 #define PROC_THREAD_STACK         2048
 #define PROC_THREAD_PRIORITY      5
 
-// Indicates the end of a sniffing window in the mobile node
 #define EOW_NODE_ID "EOW"
-/* ==========================================================================
- * Raw advertisement record — pushed into msgq by BLE callback
- * ========================================================================== */
+
+extern struct bt_conn *current_conn;
+extern bool nus_notify_enabled;
+static struct env_record node_records[SNIFFER_MAX_NODES];
+static uint8_t node_count = 0;
+static struct k_mutex node_records_mutex;
 
 struct raw_adv_record {
     char     node_id[ENV_NODE_NAME_LEN];
@@ -71,16 +62,7 @@ struct raw_adv_record {
 };
 
 K_MSGQ_DEFINE(adv_msgq, sizeof(struct raw_adv_record), ADV_MSGQ_SIZE, 4);
-
-/* ==========================================================================
- * Command queue — pushed by NUS callback, processed by proc thread
- * ========================================================================== */
-
 K_MSGQ_DEFINE(cmd_msgq, sizeof(uint8_t), 4, 1);
-
-/* ==========================================================================
- * Sequence number tracking
- * ========================================================================== */
 
 struct node_seq_entry {
     char     node_id[ENV_NODE_NAME_LEN];
@@ -124,14 +106,6 @@ static bool seq_is_valid(struct node_seq_entry *entry, uint8_t seq)
     return seq > entry->last_seq;
 }
 
-/* ==========================================================================
- * Node Records — shared between proc thread and NUS send thread
- * ========================================================================== */
-
-static struct env_record node_records[SNIFFER_MAX_NODES];
-static uint8_t node_count = 0;
-static struct k_mutex node_records_mutex;
-
 static struct env_record *find_or_alloc_node(const char *name)
 {
     for (int i = 0; i < node_count; i++) {
@@ -146,10 +120,6 @@ static struct env_record *find_or_alloc_node(const char *name)
 
     return NULL;
 }
-
-/* ==========================================================================
- * AD Parser
- * ========================================================================== */
 
 struct parse_ctx {
     struct raw_adv_record *rec;
@@ -206,10 +176,6 @@ static bool parse_sniffer_ad(struct bt_data *data, void *user_data)
     return true;
 }
 
-/* ==========================================================================
- * BLE Callback — push into msgq and return immediately
- * ========================================================================== */
-
 void sniffer_device_found(const bt_addr_le_t *addr, int8_t rssi,
                                   uint8_t type, struct net_buf_simple *ad)
 {
@@ -228,10 +194,6 @@ void sniffer_device_found(const bt_addr_le_t *addr, int8_t rssi,
         LOG_WRN("adv_msgq full, dropping packet from %s", raw.node_id);
     }
 }
-
-/* ==========================================================================
- * Command Broadcast
- * ========================================================================== */
 
 static void do_broadcast_command(uint8_t cmd)
 {
@@ -266,7 +228,6 @@ static void do_broadcast_command(uint8_t cmd)
     
     printk("Restarting mobile_node advertisement...\n");
 
-    /* Restart mobile_node connectable advertisement */
     k_work_reschedule(&adv_restart_work, K_MSEC(100));
 }
 
@@ -276,10 +237,6 @@ void ble_broadcast_command(uint8_t cmd)
         printk("cmd_msgq full, dropping command 0x%02X\n", cmd);
     }
 }
-
-/* ==========================================================================
- * NUS Send Thread (high priority)
- * ========================================================================== */
 
 K_THREAD_STACK_DEFINE(nus_send_stack, NUS_SEND_THREAD_STACK);
 static struct k_thread nus_send_thread_data;
@@ -313,7 +270,7 @@ static void nus_send_thread(void *p1, void *p2, void *p3)
             }
         }
 
-        /* Send EOW marker */
+        /* Send EOW marker, indicates transmission of node telemetry data is over */
         if (current_conn != NULL && nus_notify_enabled) {
             struct env_record eow = {0};
             memcpy(eow.node_id, EOW_NODE_ID, strlen(EOW_NODE_ID));
@@ -334,10 +291,6 @@ static void nus_send_thread(void *p1, void *p2, void *p3)
     }
 }
 
-/* ==========================================================================
- * Packet Processing Thread (lower priority)
- * ========================================================================== */
-
 K_THREAD_STACK_DEFINE(proc_stack, PROC_THREAD_STACK);
 static struct k_thread proc_thread_data;
 
@@ -351,7 +304,6 @@ static void proc_thread(void *p1, void *p2, void *p3)
     uint8_t cmd;
 
     while (1) {
-        /* Process incoming advertisement packets */
         while (k_msgq_get(&adv_msgq, &raw, K_NO_WAIT) == 0) {
 
             struct node_seq_entry *seq_entry =
@@ -381,19 +333,13 @@ static void proc_thread(void *p1, void *p2, void *p3)
             k_mutex_unlock(&node_records_mutex);
         }
 
-        /* Process incoming commands */
         while (k_msgq_get(&cmd_msgq, &cmd, K_NO_WAIT) == 0) {
             do_broadcast_command(cmd);
         }
 
-        /* Yield to higher priority threads */
         k_sleep(K_MSEC(10));
     }
 }
-
-/* ==========================================================================
- * Sniffer Start
- * ========================================================================== */
 
 void sniffer_start(void)
 {
@@ -421,6 +367,7 @@ void sniffer_start(void)
                     NUS_SEND_THREAD_PRIORITY, 0, K_NO_WAIT);
     k_thread_name_set(&nus_send_thread_data, "nus_send");
 
+    /* Send environmental data off to base node */
     k_thread_create(&proc_thread_data, proc_stack,
                     PROC_THREAD_STACK,
                     proc_thread, NULL, NULL, NULL,

@@ -20,20 +20,9 @@ LOG_MODULE_REGISTER(nus_peripheral, LOG_LEVEL_INF);
 #define CMD_MEASURE 0x01
 #define CMD_SLEEP   0x02
 
-/* ==========================================================================
- * State
- * Non-static so ble.c can access via extern
- * ========================================================================== */
-
 struct bt_conn *current_conn;
 bool nus_notify_enabled = false;
-
-/* Non-static so ble.c can reschedule after command broadcast */
 struct k_work_delayable adv_restart_work;
-
-/* ==========================================================================
- * Advertising Data
- * ========================================================================== */
 
 static const struct bt_data ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS,
@@ -47,10 +36,6 @@ static const struct bt_data sd[] = {
             CONFIG_BT_DEVICE_NAME,
             sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
-
-/* ==========================================================================
- * Advertising restart work
- * ========================================================================== */
 
 static void adv_restart_fn(struct k_work *work)
 {
@@ -96,10 +81,6 @@ static void nus_notif_changed(bool enabled, void *ctx)
     printk("NUS notify %s\n", enabled ? "enabled" : "disabled");
 }
 
-/* ==========================================================================
- * NUS Callbacks
- * ========================================================================== */
-
 static void on_receive(struct bt_conn *conn,
                        const void *data, uint16_t len,
                        void *ctx)
@@ -131,10 +112,6 @@ static struct bt_nus_cb nus_cb = {
     .received      = on_receive,
     .notif_enabled = nus_notif_changed,
 };
-
-/* ==========================================================================
- * Connection Callbacks
- * ========================================================================== */
 
 static void connected(struct bt_conn *conn, uint8_t err)
 {
@@ -173,10 +150,6 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
     .connected    = connected,
     .disconnected = disconnected,
 };
-
-/* ==========================================================================
- * Init
- * ========================================================================== */
 
 int nus_peripheral_init(void)
 {
