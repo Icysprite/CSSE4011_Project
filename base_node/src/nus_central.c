@@ -6,6 +6,9 @@
 #include "nus_central.h"
 #include "env_packet.h"
 #include "json_serial.h"
+#include "air_quality.h"
+#include "buzzer.h"
+#include "node_buffer.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -22,10 +25,7 @@
 LOG_MODULE_REGISTER(nus_central, LOG_LEVEL_INF);
 
 #define MOBILE_NODE_NAME "mobile_node"
-
-/* ==========================================================================
- * State
- * ========================================================================== */
+#define EOW_NODE_ID "EOW"
 
 static struct bt_conn *default_conn;
 
@@ -36,36 +36,85 @@ static struct bt_gatt_subscribe_params subscribe_params;
 static uint16_t nus_rx_handle;
 static bool is_connected;
 
+static air_quality_t last_eco2_class = AQ_GOOD;
+static air_quality_t last_tvoc_class = AQ_GOOD;
+
 static struct k_work_delayable scan_restart_work;
 
-/* ==========================================================================
- * Public API
- * ========================================================================== */
+static struct bt_uuid_128 rx_discover_uuid;
+static struct bt_gatt_discover_params rx_discover_params;
+
+static void start_scan(void);
+
+void nus_central_reset_classification(void)
+{
+    last_eco2_class = AQ_GOOD;
+    last_tvoc_class = AQ_GOOD;
+}
+
+static struct k_work notify_work;
+static struct env_record pending_rec;
+
+static void notify_work_fn(struct k_work *work)
+{
+    ARG_UNUSED(work);
+
+    /* Check for EOW marker */
+    if (memcmp(pending_rec.node_id, EOW_NODE_ID,
+               strlen(EOW_NODE_ID)) == 0) {
+
+        printk("EOW received — running Kalman update\n");
+
+        /* Update Kalman filter with all buffered records */
+        int n = node_buffer_count();
+        for (int i = 0; i < n; i++) {
+            const struct env_record *rec = node_buffer_get(i);
+            if (rec) {
+                air_quality_update(rec->eco2_ppm, rec->tvoc_ppb);
+            }
+        }
+
+        /* Send Kalman JSON */
+        json_serial_send_kalman();
+
+        /* Check classification and trigger buzzer */
+        air_quality_t eco2_class = air_quality_get_eco2();
+        air_quality_t tvoc_class = air_quality_get_tvoc();
+
+        if (eco2_class != last_eco2_class || tvoc_class != last_tvoc_class) {
+            if (eco2_class == AQ_POOR || tvoc_class == AQ_POOR) {
+                buzzer_poor();
+            } else if (eco2_class == AQ_WARNING || tvoc_class == AQ_WARNING) {
+                buzzer_stop();
+                buzzer_warning();
+            } else {
+                buzzer_stop();
+            }
+
+            last_eco2_class = eco2_class;
+            last_tvoc_class = tvoc_class;
+        }
+
+        /* Clear buffer for next window */
+        node_buffer_clear();
+        return;
+    }
+
+    /* Normal node record — store in buffer and send node JSON */
+    node_buffer_add(&pending_rec);
+    json_serial_send(&pending_rec);
+}
 
 bool nus_central_is_connected(void)
 {
     return is_connected;
 }
 
-/* ==========================================================================
- * Forward declarations
- * ========================================================================== */
-
-static void start_scan(void);
-
-/* ==========================================================================
- * Scan restart work
- * ========================================================================== */
-
 static void scan_restart_fn(struct k_work *work)
 {
     ARG_UNUSED(work);
     start_scan();
 }
-
-/* ==========================================================================
- * GATT Notification Callback
- * ========================================================================== */
 
 static uint8_t notify_func(struct bt_conn *conn,
                            struct bt_gatt_subscribe_params *params,
@@ -83,17 +132,12 @@ static uint8_t notify_func(struct bt_conn *conn,
         return BT_GATT_ITER_CONTINUE;
     }
 
-    struct env_record rec;
-    memcpy(&rec, data, sizeof(struct env_record));
-
-    json_serial_send(&rec);
+    /* Copy record and submit work — return immediately */
+    memcpy(&pending_rec, data, sizeof(struct env_record));
+    k_work_submit(&notify_work);
 
     return BT_GATT_ITER_CONTINUE;
 }
-
-/* ==========================================================================
- * GATT Discovery
- * ========================================================================== */
 
 static uint8_t discover_func(struct bt_conn *conn,
                              const struct bt_gatt_attr *attr,
@@ -160,13 +204,6 @@ static uint8_t discover_func(struct bt_conn *conn,
     return BT_GATT_ITER_STOP;
 }
 
-/* ==========================================================================
- * NUS RX Handle Discovery
- * ========================================================================== */
-
-static struct bt_uuid_128 rx_discover_uuid;
-static struct bt_gatt_discover_params rx_discover_params;
-
 static uint8_t rx_discover_func(struct bt_conn *conn,
                                 const struct bt_gatt_attr *attr,
                                 struct bt_gatt_discover_params *params)
@@ -203,10 +240,6 @@ static void discover_nus_rx(struct bt_conn *conn)
     }
 }
 
-/* ==========================================================================
- * Sending Commands
- * ========================================================================== */
-
 static void write_func(struct bt_conn *conn, uint8_t err,
                        struct bt_gatt_write_params *params)
 {
@@ -242,10 +275,6 @@ int nus_send_command(uint8_t cmd)
 
     return bt_gatt_write(default_conn, &write_params);
 }
-
-/* ==========================================================================
- * Scanning
- * ========================================================================== */
 
 static bool parse_ad_for_name(struct bt_data *data, void *user_data)
 {
@@ -328,10 +357,6 @@ static void start_scan(void)
     printk("Scanning for mobile_node...\n");
 }
 
-/* ==========================================================================
- * MTU and Data Length
- * ========================================================================== */
-
 static void update_data_length(struct bt_conn *conn)
 {
     int err;
@@ -367,10 +392,6 @@ static void mtu_exchange_cb(struct bt_conn *conn, uint8_t err,
 static struct bt_gatt_exchange_params mtu_exchange_params = {
     .func = mtu_exchange_cb,
 };
-
-/* ==========================================================================
- * Connection Callbacks
- * ========================================================================== */
 
 static void connected(struct bt_conn *conn, uint8_t conn_err)
 {
@@ -438,6 +459,10 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     bt_conn_unref(default_conn);
     default_conn = NULL;
 
+    buzzer_stop();
+    last_eco2_class = AQ_GOOD;
+    last_tvoc_class = AQ_GOOD;
+
     printk("Disconnected from mobile_node (%s) reason 0x%02x\n", addr, reason);
 
     k_work_reschedule(&scan_restart_work, K_MSEC(200));
@@ -449,13 +474,10 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
     .le_data_len_updated = on_le_data_len_updated,
 };
 
-/* ==========================================================================
- * Init
- * ========================================================================== */
-
 int nus_central_init(void)
 {
     k_work_init_delayable(&scan_restart_work, scan_restart_fn);
+    k_work_init(&notify_work, notify_work_fn);
 
     int err = bt_enable(NULL);
     if (err) {
