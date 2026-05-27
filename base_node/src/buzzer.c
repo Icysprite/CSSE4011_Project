@@ -1,11 +1,3 @@
-/*
- * Black-Valetudo - Base Node
- * PWM buzzer/speaker driver
- *
- * Warning — short chirps at 1000 Hz
- * Poor    — continuous alarm at 2000 Hz until stopped
- */
-
 #include "buzzer.h"
 
 #include <zephyr/kernel.h>
@@ -21,10 +13,6 @@ LOG_MODULE_REGISTER(buzzer, LOG_LEVEL_INF);
 
 static const struct pwm_dt_spec buzzer_pwm =
     PWM_DT_SPEC_GET(DT_ALIAS(buzzer));
-
-/* ==========================================================================
- * Buzzer thread
- * ========================================================================== */
 
 #define BUZZER_THREAD_STACK 512
 #define BUZZER_THREAD_PRIO  10
@@ -51,14 +39,13 @@ static void buzzer_thread(void *p1, void *p2, void *p3)
     bool poor_active = false;
 
     while (1) {
-        /* Block until a command arrives */
         k_msgq_get(&buzzer_msgq, &cmd, K_FOREVER);
 
         switch (cmd) {
 
         case BUZZER_WARNING:
-            /* Short chirps — k_sleep needed for on/off timing */
             for (int i = 0; i < CHIRP_COUNT; i++) {
+                // 50% duty cycle
                 pwm_set_dt(&buzzer_pwm,
                            PWM_HZ(WARNING_FREQ_HZ),
                            PWM_HZ(WARNING_FREQ_HZ) / 2);
@@ -70,13 +57,11 @@ static void buzzer_thread(void *p1, void *p2, void *p3)
             break;
 
         case BUZZER_POOR:
-            /* Start PWM — hardware runs independently */
             poor_active = true;
             pwm_set_dt(&buzzer_pwm,
                        PWM_HZ(POOR_FREQ_HZ),
                        PWM_HZ(POOR_FREQ_HZ) / 2);
 
-            /* Yield CPU — check msgq for stop command */
             while (poor_active) {
                 buzzer_cmd_t inner_cmd;
                 if (k_msgq_get(&buzzer_msgq,
@@ -88,12 +73,10 @@ static void buzzer_thread(void *p1, void *p2, void *p3)
                 k_sleep(K_MSEC(100));
             }
 
-            /* Stop PWM */
             pwm_set_dt(&buzzer_pwm, PWM_HZ(POOR_FREQ_HZ), 0);
             break;
 
         case BUZZER_STOP:
-            /* Stop if poor alarm is not active */
             pwm_set_dt(&buzzer_pwm, PWM_HZ(POOR_FREQ_HZ), 0);
             break;
 
@@ -102,10 +85,6 @@ static void buzzer_thread(void *p1, void *p2, void *p3)
         }
     }
 }
-
-/* ==========================================================================
- * Public API
- * ========================================================================== */
 
 int buzzer_init(void)
 {
