@@ -355,3 +355,157 @@ Records are logged to `air_quality_log.csv` with the following columns:
 | `blockchain_status` | `VERIFIED`, `DATA MODIFIED`, `NO BLOCKCHAIN HASH`, or `BLOCKCHAIN ERROR` |
 | `modification_detected` | `True` or `False` |
 
+# Thingy:52 Sensor Node — Installation and Usage
+
+## Hardware Requirements
+
+- Nordic Thingy:52
+- nRF52840-DK (required as external programmer/debugger)
+- 10-pin SWD debug cable
+- USB cable for nRF52840-DK
+- PC running Linux with Zephyr development environment set up
+
+## Why the nRF52840-DK is Required
+
+The Thingy:52 does not have an onboard J-Link debug IC. An external programmer is required to flash firmware. The nRF52840-DK has a built-in J-Link that can be used as a debug-out programmer for external targets via its **Debug Out** connector.
+
+## Hardware Setup
+
+1. Connect the nRF52840-DK to the Thingy:52 using the 10-pin SWD cable:
+
+| nRF52840-DK Debug Out | Thingy:52 P9 Programming Header |
+|---|---|
+| VTG | VDD |
+| SWDIO | SWDIO |
+| SWDCLK | SWDCLK |
+| GND | GND |
+| RESET | RESET |
+
+2. On the nRF52840-DK set the **SW6** switch to **EXT** — this routes the J-Link to the external debug out connector rather than the onboard nRF52840
+3. Connect the nRF52840-DK to the PC via USB
+4. Power on the Thingy:52 using its slide switch
+
+## Prerequisites
+
+Ensure the following are installed and configured:
+
+- Zephyr RTOS and west build tools
+- nRF Connect SDK
+- GNU Arm Embedded Toolchain
+- J-Link software package from SEGGER
+
+Verify J-Link is detected:
+```bash
+JLinkExe -device nRF52832_xxAA -if SWD -speed 4000 -autoconnect 1
+```
+
+Refer to the [Zephyr Getting Started Guide](https://docs.zephyrproject.org/latest/develop/getting_started/index.html) for environment setup.
+
+## Repository Structure
+
+```
+thingy52_node/
+├── build/
+├── src/
+│   ├── main.c
+│   ├── node_helpers.c
+│   └── node_helpers.h
+├── CMakeLists.txt
+├── prj.conf
+└── README.md
+```
+
+## Configuration
+
+All configurable parameters are in `src/node_helpers.h`.
+
+**Node identity — must be unique per node:**
+```c
+#define NODE_ID       3          /* integer node ID — 1 through 5 */
+#define DEVICE_NAME   "node_3"   /* must match NODE_ID */
+```
+
+Change both `NODE_ID` and `DEVICE_NAME` for each node. They must be consistent — `NODE_ID 1` must pair with `DEVICE_NAME "node_1"`.
+
+## Compilation
+
+Navigate to the project root directory and run:
+
+```bash
+west build -p -b thingy52/nrf52832 -d thingy52_node/build thingy52_node/
+```
+
+- `-p` — pristine build, cleans previous build artifacts
+- `-b thingy52/nrf52832` — target board
+- `-d thingy52_node/build` — build output directory
+- `thingy52_node/` — source directory
+
+A successful build produces:
+
+```
+thingy52_node/build/zephyr/zephyr.bin
+thingy52_node/build/zephyr/zephyr.hex
+```
+
+## Flashing
+
+With the nRF52840-DK connected and SW6 set to EXT:
+
+```bash
+west flash -d thingy52_node/build --runner jlink
+```
+
+If flashing fails, try specifying the device explicitly:
+
+```bash
+west flash -d thingy52_node/build --runner jlink \
+    --device nRF52832_xxAA
+```
+
+## Verifying Operation
+
+The Thingy:52 does not have a USB serial console. Verify operation using one of the following methods:
+
+**Option 1 — nRF Connect for Desktop:**
+1. Install nRF Connect for Desktop from [https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-for-Desktop](https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-for-Desktop)
+2. Open the **Bluetooth Low Energy** app
+3. Scan for `node_1` — the Thingy:52 should appear advertising with manufacturer data
+
+**Option 2 — nRF Connect for Mobile:**
+1. Install nRF Connect on iOS or Android
+2. Scan for `node_1`
+3. The advertisement should show manufacturer specific data with eCO2 and TVOC values
+
+**Option 3 — Base node terminal:**
+Once the full system is running, the base node will output JSON for each received record:
+
+```json
+{"type":"node","node_id":"node_1","timestamp_ms":117152,"temperature":2787,"humidity":6100,"eco2":572,"tvoc":26}
+```
+
+## Deploying Multiple Nodes
+
+For each additional Thingy:52, update `src/node_helpers.h`:
+
+| Node | `NODE_ID` | `DEVICE_NAME` |
+|---|---|---|
+| Node 1 | `1` | `"node_1"` |
+| Node 2 | `2` | `"node_2"` |
+| Node 3 | `3` | `"node_3"` |
+| Node 4 | `4` | `"node_4"` |
+| Node 5 | `5` | `"node_5"` |
+
+Rebuild and flash each node individually using the nRF52840-DK.
+
+## Operating Modes
+
+The node supports two operating modes controlled by commands from the mobile node:
+
+| Mode | Behaviour |
+|---|---|
+| Normal (`MODE_NORMAL`) | Continuously samples sensors and floods data into mesh |
+| Low Power (`MODE_LOW_POWER`) | Sleeps for `LOW_POWER_SLEEP_MS`, wakes for `LOW_POWER_LISTEN_MS` to listen for commands |
+
+Send `CMD_MEASURE` from the base node shell (`wake`) to enter Normal mode.
+Send `CMD_SLEEP` from the base node shell (`sleep`) to enter Low Power mode.
+
