@@ -221,8 +221,6 @@ Classification values: `"good"`, `"warning"`, `"poor"`.
 
 ## Buzzer Behaviour
 
-The buzzer connected to pin P0.03 provides local audio alerts:
-
 | Air Quality State | Buzzer Behaviour |
 |---|---|
 | Good | Silent |
